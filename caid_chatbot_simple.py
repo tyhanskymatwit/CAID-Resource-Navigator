@@ -1,11 +1,13 @@
 import pandas as pd
 import json
+from caid_resources import CAIDresource
 from datetime import datetime
+
 
 class CAIDChatbot:
     def __init__(self, database_path):
         """Initialize the chatbot with the resources database"""
-        self.db = pd.read_excel(database_path, sheet_name='Resources')
+        self.agent = CAIDresource(database_path)
         self.conversation_log = []
         self.patient_data = {}
         
@@ -72,11 +74,11 @@ You can enter multiple lines. Type 'done' when finished.
                 score = int(parts[1])
                 
                 if category_num not in categories:
-                    print(f" Invalid category number. Please use 1-18.")
+                    print(" Invalid category number. Please use 1-18.")
                     continue
                 
                 if score < 1 or score > 6:
-                    print(f" Score must be between 1 (crisis) and 6 (fully functional).")
+                    print(" Score must be between 1 (crisis) and 6 (fully functional).")
                     continue
                 
                 category_name = categories[category_num]
@@ -106,7 +108,7 @@ to any of the following (type the numbers that apply, separated by commas):
 9. Cancer patient
 10. Less than 18 years old
 
-Example: "Provincetown, 1,6" for Senior and Low-income in Provincetown
+Example: "Provincetown, 1, 6" for Senior and Low-income in Provincetown
 """
         print(location_prompt)
         
@@ -287,7 +289,7 @@ Description:
         print(f"\n Searching for services: {', '.join(needed_services)}")
         
         # Step 4: Search database
-        results = self.search_resources(needed_services, location, demographics)
+        results = self.agent.search_resources(needed_services, location, demographics)
         
         # Step 5: Present results
         self.present_results(results, critical_needs)
