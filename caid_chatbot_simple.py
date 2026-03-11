@@ -2,14 +2,27 @@ import pandas as pd
 import json
 from caid_resources import CAIDresource
 from datetime import datetime
+import os
 
 
 class CAIDChatbot:
-    def __init__(self, database_path):
-        """Initialize the chatbot with the resources database"""
-        self.agent = CAIDresource(database_path)
+    def __init__(self, database_path, google_maps_api_key=None):
+        """
+        Initialize the chatbot with the resources database
+        
+        Args:
+            database_path: Path to Excel database
+            google_maps_api_key: Optional Google Maps API key for proximity features
+        """
+        # Get API key from parameter or environment variable
+        api_key = google_maps_api_key or os.getenv("GOOGLE_MAPS_API_KEY")
+        
+        self.agent = CAIDresource(database_path, google_maps_api_key=api_key)
         self.conversation_log = []
         self.patient_data = {}
+        
+        # Check if proximity features are available
+        self.proximity_enabled = self.agent.location_service.gmaps is not None
         
     def log_interaction(self, user_input, bot_response):
         """Log all interactions for record keeping"""
@@ -21,9 +34,22 @@ class CAIDChatbot:
     
     def start_conversation(self):
         """Begin the conversation flow"""
+        print("\n" + "="*80)
         print("CAID COMMUNITY RESOURCES NAVIGATOR")
+        print("="*80)
         
-        greeting = """1. Income
+        if self.proximity_enabled:
+            print(" Proximity-based search ENABLED")
+        else:
+            print(" Proximity features disabled (no Google Maps API key)")
+            print("  Set GOOGLE_MAPS_API_KEY environment variable to enable")
+        
+        print("="*80 + "\n")
+        
+        greeting = """Greetings! Please provide a number from 1-6 describing which of the following 
+services you struggle with (1 being crisis, 6 being fully functional):
+
+1. Income
 2. Employment
 3. Housing
 4. Food
@@ -42,7 +68,7 @@ class CAIDChatbot:
 17. Parenting Skills
 18. Credit History
 
-Please enter the category number followed by your rating (1-6).
+Please enter the category NUMBER followed by your rating (1-6).
 Example: "4 2" means Food is at crisis level 2
 You can enter multiple lines. Type 'done' when finished.
 """
@@ -83,7 +109,7 @@ You can enter multiple lines. Type 'done' when finished.
                 
                 category_name = categories[category_num]
                 scores[category_name] = score
-                print(f"Recorded: {category_name} = {score}")
+                print(f" Recorded: {category_name} = {score}")
                 
             except (ValueError, IndexError):
                 print(" Invalid format. Use: [category number] [score]")
@@ -94,7 +120,8 @@ You can enter multiple lines. Type 'done' when finished.
     
     def collect_location_and_demographics(self):
         """Collect location and demographic information"""
-        location_prompt = """Please provide your town location and let us know if you apply 
+        print("\n" + "-"*80)
+        location_prompt = """Thanks! Please provide your town location and let us know if you apply 
 to any of the following (type the numbers that apply, separated by commas):
 
 1. Senior
@@ -108,8 +135,13 @@ to any of the following (type the numbers that apply, separated by commas):
 9. Cancer patient
 10. Less than 18 years old
 
-Example: "Provincetown, 1, 6" for Senior and Low-income in Provincetown
+Example: "Hyannis, 1, 6" for Senior and Low-income in Hyannis
 """
+        
+        if self.proximity_enabled:
+            print(" Tip: Be specific with your location for best proximity results!")
+            print("   You can enter: city name, zip code, or even 'current location'")
+        
         print(location_prompt)
         
         user_input = input("\n> ").strip()
@@ -169,53 +201,8 @@ Example: "Provincetown, 1, 6" for Senior and Low-income in Provincetown
         
         return list(needed_services), critical_needs
     
-    def search_resources(self, service_types, location=None, demographics=None):
-        """Search the database for matching resources"""
-        # Start with all resources
-        results = self.db.copy()
-        
-        # Filter by service type
-        if service_types:
-            mask = results['Service Type'].apply(
-                lambda x: any(st in str(x) for st in service_types) if pd.notna(x) else False
-            )
-            results = results[mask]
-        
-        # Filter by location if specified
-        if location:
-            location_mask = results['Address'].str.contains(location, case=False, na=False)
-            location_results = results[location_mask]
-            
-            # If we found local results, use them; otherwise show all
-            if len(location_results) > 0:
-                results = location_results
-            else:
-                print(f"\n  No resources found in {location}. Showing resources from nearby areas.\n")
-        
-        # Filter by demographics if specified
-        if demographics:
-            # Create a scoring system for demographic matches
-            def score_demographics(req_text):
-                if pd.isna(req_text):
-                    return 0
-                req_lower = str(req_text).lower()
-                score = 0
-                for demo in demographics:
-                    if demo.lower() in req_lower:
-                        score += 1
-                # Also give points for "all ages" or general eligibility
-                if 'all ages' in req_lower or 'all' in req_lower:
-                    score += 0.5
-                return score
-            
-            results['demo_score'] = results['Patient Requirements'].apply(score_demographics)
-            # Sort by demographic match score
-            results = results.sort_values('demo_score', ascending=False)
-        
-        return results
-    
     def format_resource(self, row):
-        """Format a resource for display"""
+        """Format a resource for display with distance information"""
         days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
         
         hours_list = []
@@ -228,10 +215,21 @@ Example: "Provincetown, 1, 6" for Senior and Low-income in Provincetown
         
         hours_text = "\n".join(hours_list)
         
+        # Add distance if available
+        distance_info = ""
+        if pd.notna(row.get('_Distance_Miles')):
+            distance = row['_Distance_Miles']
+            if distance < 1:
+                distance_info = f"\n Distance: {distance:.2f} miles ({int(distance * 5280)} feet)"
+            else:
+                distance_info = f"\n Distance: {distance:.1f} miles"
+        
         output = f"""
+{'='*80}
 {row['Name']}
+{'='*80}
 Organization: {row['Organization']}
-Address: {row['Address']}
+Address: {row['Address']}{distance_info}
 
 Hours:
 {hours_text}
@@ -246,10 +244,12 @@ Description:
     
     def present_results(self, results, critical_needs):
         """Present search results to the patient."""
-        print("\n Next steps: \n-Add proximity location functionality \n-Properly incorporate SSM \n-Add more detailed resource information \n-Add decent user interface \n-Save patient contact data and remind them of upcoming appoitnents/group meetings \nResources for you:")
+        print("\n" + "="*80)
+        print("RECOMMENDED RESOURCES FOR YOU")
+        print("="*80 + "\n")
         
         if critical_needs:
-            print(f"  Critical Needs: {', '.join(critical_needs)}")
+            print(f"  CRITICAL NEEDS IDENTIFIED: {', '.join(critical_needs)}")
             print("    We recommend contacting these resources as soon as possible.\n")
         
         if len(results) == 0:
@@ -258,17 +258,34 @@ Description:
             print("   Or visit: https://www.findhelp.org\n")
             return
         
-        print(f"Found {len(results)} resource(s) for you:\n")
+        # Show distance summary if available
+        if '_Distance_Miles' in results.columns:
+            distances = results['_Distance_Miles'].dropna()
+            if len(distances) > 0:
+                print(f" DISTANCE SUMMARY:")
+                print(f"   Closest resource: {distances.min():.1f} miles")
+                print(f"   Farthest shown: {distances.max():.1f} miles")
+                print(f"   Average distance: {distances.mean():.1f} miles")
+                print()
+        
+        print(f"Found {len(results)} resource(s), showing top results sorted by relevance:\n")
         
         # Show top 5 results (or all if less than 5)
         top_results = results.head(5)
         
         for idx, (_, row) in enumerate(top_results.iterrows(), 1):
+            print(f"\n{'*'*80}")
             print(f"RESOURCE #{idx}")
             print(self.format_resource(row))
         
         if len(results) > 5:
-            print(f"\n... and {len(results) - 5} more resources available.")
+            print(f"\n{'='*80}")
+            print(f"... and {len(results) - 5} more resources available.")
+            print("\nAll results have been sorted by:")
+            if self.proximity_enabled and '_Distance_Miles' in results.columns:
+                print("  1. Distance from your location (closest first)")
+            print("  2. Demographic match")
+            print("  3. Service relevance")
     
     def run(self):
         """Run the complete chatbot conversation"""
@@ -287,16 +304,33 @@ Description:
         needed_services, critical_needs = self.map_ssm_to_services(scores)
         
         print(f"\n Searching for services: {', '.join(needed_services)}")
+        if self.proximity_enabled and location:
+            print(f" Calculating distances from: {location}")
+        print()
         
-        # Step 4: Search database
-        results = self.agent.search_resources(needed_services, location, demographics)
+        # Step 4: Search database with proximity ranking
+        results = self.agent.search_resources(
+            service_types=needed_services,
+            location=location,
+            demographics=demographics,
+            use_proximity=True
+        )
         
         # Step 5: Present results
         self.present_results(results, critical_needs)
+        
+        print("\n" + "="*80)
+        print("Thank you for using CAID Community Resources Navigator!")
+        print("For additional help, call 211 or visit www.findhelp.org")
+        print("="*80 + "\n")
+
 
 # Main execution
 if __name__ == "__main__":
     # Initialize chatbot with database
+    # API key can be set via environment variable: GOOGLE_MAPS_API_KEY
+    # Or pass directly: chatbot = CAIDChatbot('database.xlsx', google_maps_api_key='YOUR_KEY')
+    
     chatbot = CAIDChatbot('CAID Resources Database.xlsx')
     
     # Run the conversation
