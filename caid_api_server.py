@@ -2,12 +2,14 @@ from typing import List, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 import os
 
 from caid_resources import CAIDresource, looks_like_potential_info
 
+load_dotenv()
 
-DEFAULT_DB_PATH = os.getenv("CAID_DB_PATH", "CAID Resources Database.xlsx")
+DEFAULT_DB_PATH = os.getenv("CAID_DB_PATH", "CAID_Resources_Database_Maps_Optimal_LatLong.xlsx")
 DEFAULT_SHEET = os.getenv("CAID_SHEET", "Resources")
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
 
@@ -91,6 +93,8 @@ class ResourceInfo(BaseModel):
     Score: float = 0.0
     Distance_Miles: Optional[float] = None
     Proximity_Score: Optional[float] = None
+    Latitude: Optional[float] = None
+    Longitude: Optional[float] = None
 
 
 class RecommendedResource(BaseModel):
@@ -147,6 +151,25 @@ def row_to_item(row) -> ResourceInfo:
                 proximity_score = float(row["_Proximity_Score"])
         except:
             pass
+        
+    latitude = None
+    longitude = None
+    
+    if "Latitude" in row and row["Latitude"] is not None:
+        try:
+            import pandas as pd
+            if not pd.isna(row["Latitude"]):
+                latitude = float(row["Latitude"])
+        except:
+            pass
+    
+    if "Longitude" in row and row["Longitude"] is not None:
+        try:
+            import pandas as pd
+            if not pd.isna(row["Longitude"]):
+                longitude = float(row["Longitude"])
+        except:
+            pass
     
     return ResourceInfo(
         Name=get("Name"),
@@ -164,7 +187,9 @@ def row_to_item(row) -> ResourceInfo:
         Description=get("Description"),
         Score=float(row.get("_Score", 0.0)) if hasattr(row, "get") else 0.0,
         Distance_Miles=distance_miles,
-        Proximity_Score=proximity_score
+        Proximity_Score=proximity_score,
+        Latitude=latitude,
+        Longitude=longitude
     )
 
 

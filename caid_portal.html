@@ -643,6 +643,8 @@
           </button>
         </div>
 
+        <div id="map" class="hidden" style="height: 400px; border-radius: 16px; margin-bottom: 14px; overflow: hidden;"></div>
+
         <div id="results" class="results">
           <div class="empty" id="emptyState">
             Run a search to see matching resources. We’ll list names, descriptions, and general locations (no patient data needed).
@@ -660,6 +662,11 @@
 
 <script>
   const API_BASE = "http://127.0.0.1:8000";
+
+  let map;
+  let markers = [];
+
+  let activeInfoWindow = null;
 
   const SERVICES = [
     "Food","Housing","Money","Health","Mental Health","Substance",
@@ -779,16 +786,81 @@
     }[m]));
   }
 
+  function initMap() {
+    const map0 = document.getElementById("map");
+    map0.classList.remove("hidden");
+
+    if (!window.google || !window.google.maps)
+      return;
+
+    if (!map) {
+      map = new google.maps.Map(map0, {
+        zoom: 10,
+        center: { lat: 41.6688, lng: -70.2962 },
+        mapTypeControl: false,
+        streetViewControl: false,
+        fullscreenControl: true
+      });
+    }
+
+  }
+
+  function addMarker(lat, lng, title, address = "", service = "", distance = "", description = "") {
+    const marker = new google.maps.Marker({
+      position: { lat: lat, lng: lng },
+      map: map,
+      title: title
+    });
+
+    const infoWindow = new google.maps.InfoWindow({
+      content: `
+        <div style="max-width:240px; line-height:1.4;">
+          <strong>${escapeHtml(title || "Resource")}</strong><br>
+          ${address ? `<div>${escapeHtml(address)}</div>` : ``}
+          ${service ? `<div><b>Service:</b> ${escapeHtml(service)}</div>` : ``}
+          ${distance ? `<div><b>Distance:</b> ${escapeHtml(distance)}</div>` : ``}
+          ${description ? `<div style="margin-top:6px;">${escapeHtml(description)}</div>` : ``}
+        </div>
+      `
+    });
+
+    marker.addListener("click", () => {
+      if (activeInfoWindow) {
+        activeInfoWindow.close();
+      }
+
+      infoWindow.open({
+        anchor: marker,
+        map,
+        shouldFocus: false
+      });
+
+      activeInfoWindow = infoWindow;
+    });
+
+    markers.push(marker);
+  }
+
+  function clearMarkers() {
+    markers.forEach(m => m.setMap(null));
+    markers = [];
+  }
+
   function renderResults(items){
     resultsShell.classList.remove("hidden");
     emptyState.classList.add("hidden");
     [...resultsEl.querySelectorAll(".result")].forEach(n => n.remove());
+
+    initMap();
+    clearMarkers();
 
     if(!items || items.length === 0){
       emptyState.textContent = "No matching resources were found. Try a different category, broaden your location, or increase the result count.";
       emptyState.classList.remove("hidden");
       return;
     }
+
+    const bounds = new google.maps.LatLngBounds();
 
     items.forEach(r => {
       const card = document.createElement("div");
@@ -798,6 +870,24 @@
       const addr = escapeHtml(r.Address || "");
       const desc = escapeHtml(r.Description || "");
       const svc  = escapeHtml(r["Service Type"] || r.ServiceType || "");
+
+      const hasCoords = 
+        r.Latitude !== null && r.Latitude !== undefined &&
+        r.Longitude !== null && r.Longitude !== undefined &&
+        !isNaN(parseFloat(r.Latitude)) &&
+        !isNaN(parseFloat(r.Longitude));
+
+      if (hasCoords) {
+        const lat = parseFloat(r.Latitude);
+        const lng = parseFloat(r.Longitude);
+
+        const distanceText = r.Distance_Miles != null
+          ? `${Number(r.Distance_Miles).toFixed(1)} miles away`
+          : "";
+
+        addMarker(lat, lng, r.Name || "Resource", r.Address || "", r["Service Type"] || r.ServiceType || r.Service_Type || "", distanceText, r.Description || "");
+          bounds.extend({ lat, lng });
+      }
 
       card.innerHTML = `
         <div class="result-top">
@@ -817,6 +907,10 @@
 
       resultsEl.appendChild(card);
     });
+
+    if (!bounds.isEmpty()) {
+      map.fitBounds(bounds);
+    }
   }
 
   document.getElementById("searchBtn").onclick = async () => {
@@ -860,6 +954,9 @@
 
   // init
   updateStepper(1);
+</script>
+<script async
+  src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDTOwE0Nl6C4mOjMfLpiUGWV3fs61_fBqY&callback=initMap">
 </script>
 </body>
 </html>
