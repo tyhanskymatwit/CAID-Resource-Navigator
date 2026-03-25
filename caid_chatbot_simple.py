@@ -303,18 +303,30 @@ Description:
         # Step 3: Map scores to services
         needed_services, critical_needs = self.map_ssm_to_services(scores)
         
-        print(f"\n Searching for services: {', '.join(needed_services)}")
+        print(f"\n Searching for services based on SSM scores")
         if self.proximity_enabled and location:
             print(f" Calculating distances from: {location}")
         print()
         
-        # Step 4: Search database with proximity ranking
-        results = self.agent.search_resources(
-            service_types=needed_services,
-            location=location,
-            demographics=demographics,
-            use_proximity=True
-        )
+        # Step 4: Search database with SSM-based matching
+        try:
+            results = self.agent.search_resources_with_ssm(
+                ssm_scores=scores,
+                location=location,
+                demographics=demographics,
+                use_proximity=True,
+                top_k=10
+            )
+        except Exception as e:
+            print(f"SSM matching failed, using standard search: {e}")
+            # Fallback to standard search
+            needed_services, _ = self.map_ssm_to_services(scores)
+            results = self.agent.search_resources(
+                service_types=needed_services,
+                location=location,
+                demographics=demographics,
+                use_proximity=True
+            )
         
         # Step 5: Present results
         self.present_results(results, critical_needs)

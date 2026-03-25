@@ -1,8 +1,16 @@
 import re
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 import pandas as pd
 from math import radians, sin, cos, sqrt, atan2
 import os
+
+# Try to import SSM matcher (optional ML feature)
+try:
+    from ssm_matcher import SSMatcher
+    SSM_AVAILABLE = True
+except ImportError:
+    SSM_AVAILABLE = False
+    print("SSM ML matching not available. Install scikit-learn: pip install scikit-learn")
 
 # Trying to ensure anything such as a phone number or email of a patient is discarded for confidentiality
 potential_info_patterns = [
@@ -143,6 +151,15 @@ class CAIDresource:
         
         # Initialize location service
         self.location_service = LocationService(google_maps_api_key)
+        
+        # Initialize SSM matcher if available
+        self.ssm_matcher = None
+        if SSM_AVAILABLE:
+            try:
+                self.ssm_matcher = SSMatcher(self.db)
+                print("SSM ML matching enabled")
+            except Exception as e:
+                print(f"SSM matcher initialization failed: {e}")
         
         # Cache for geocoded addresses
         self._geocode_cache = {}
@@ -343,3 +360,146 @@ class CAIDresource:
         summary += f"Closest resource: {distances.min():.1f} miles away"
         
         return summary
+    
+    def search_resources_with_ssm(
+        self,
+        ssm_scores: Dict[str, int],
+        location: Optional[str] = None,
+        demographics: Optional[List[str]] = None,
+        top_k: int = 25,
+        use_proximity: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Advanced search using ML-based SSM matching
+        
+        Combines:
+        1. SSM-based resource matching (ML similarity scoring)
+        2. Proximity-based ranking (if location provided)
+        3. Demographic matching
+        
+        Args:
+            ssm_scores: Dict of SSM category -> score (1-6)
+                       e.g., {'Food': 2, 'Housing': 1, 'Income': 3}
+            location: Patient location
+            demographics: List of demographic keywords
+            top_k: Maximum number of results
+            use_proximity: Whether to use distance-based ranking
+        
+        Returns:
+            DataFrame of matched resources with SSM match scores
+        """
+        if not self.ssm_matcher:
+            print("Warning: SSM ML matching not available. Using standard search.")
+            # Fall back to standard search
+            # Map SSM scores to service types
+            service_types = self._ssm_to_services(ssm_scores)
+            return self.search_resources(
+                service_types=service_types,
+                location=location,
+                demographics=demographics,
+                top_k=top_k,
+                use_proximity=use_proximity
+            )
+        
+        # Use ML-based SSM matching
+        results = self.ssm_matcher.match_resources(
+            ssm_scores=ssm_scores,
+            location=location,
+            demographics=demographics,
+            top_k=top_k * 2  # Get more for proximity filtering
+        )
+        
+        # Add proximity scoring if requested
+        if location and use_proximity and self.location_service.gmaps:
+            patient_coords = self.location_service.geocode(location)
+            
+            if patient_coords:
+                print(f"Patient location geocoded: {location}")
+                
+                # Calculate distances
+                distances = []
+                for idx, row in results.iterrows():
+                    resource_address = row.get('Full Address (Formatted)', row.get('Address', ''))
+                    
+                    if "online" in resource_address.lower():
+                        distances.append((idx, None))
+                        continue
+                    
+                    resource_coords = self._get_resource_coordinates(resource_address)
+                    
+                    if resource_coords:
+                        distance = self.location_service.haversine_distance(
+                            patient_coords[0], patient_coords[1],
+                            resource_coords[0], resource_coords[1]
+                        )
+                        distances.append((idx, distance))
+                    else:
+                        distances.append((idx, None))
+                
+                # Add distances to dataframe
+                for idx, distance in distances:
+                    if idx in results.index:
+                        results.loc[idx, 'Distance_Miles'] = distance
+                
+                # Calculate proximity score
+                def proximity_score(distance):
+                    if pd.isna(distance):
+                        return 0.0
+                    if distance < 0.5:
+                        return 10.0
+                    elif distance < 5:
+                        return 10.0 - (distance / 5) * 3
+                    elif distance < 15:
+                        return 7.0 - ((distance - 5) / 10) * 4
+                    else:
+                        return max(0.0, 3.0 - ((distance - 15) / 20) * 3)
+                
+                results['Proximity_Score'] = results['Distance_Miles'].apply(proximity_score)
+                
+                # Combine SSM score with proximity
+                results['Combined_Score'] = (
+                    results['SSM_Match_Score'] * 1.5 +  # SSM is primary
+                    results['Proximity_Score'] * 10.0 +  # Proximity is important
+                    results.get('Demo_Score', 0) * 5.0   # Demographics secondary
+                )
+                
+                results = results.sort_values('Combined_Score', ascending=False)
+            else:
+                # No proximity, just use SSM scores
+                results = results.sort_values('Total_Score', ascending=False)
+        else:
+            # No proximity requested
+            results = results.sort_values('Total_Score', ascending=False)
+        
+        return results.head(top_k)
+    
+    def _ssm_to_services(self, ssm_scores: Dict[str, int]) -> List[str]:
+        """
+        Convert SSM scores to service types (fallback when ML not available)
+        
+        Args:
+            ssm_scores: Dict of category -> score
+        
+        Returns:
+            List of service types needed
+        """
+        service_mapping = {
+            'Income': ['Money', 'Work'],
+            'Employment': ['Work', 'Education'],
+            'Housing': ['Housing'],
+            'Food': ['Food'],
+            'Childcare': ['Childrens'],
+            "Children's Education": ['Childrens', 'Education'],
+            'Adult Education': ['Education'],
+            'Health Care': ['Healthcare', 'Health'],
+            'Mobility': ['Transit'],
+            'Parenting Skills': ['Childrens', 'Education']
+        }
+        
+        needed_services = set()
+        for category, score in ssm_scores.items():
+            if score <= 3:  # Need support
+                services = service_mapping.get(category, [])
+                needed_services.update(services)
+        
+        return list(needed_services)
